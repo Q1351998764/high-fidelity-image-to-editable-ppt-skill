@@ -1,0 +1,4 @@
+interface:
+  display_name: "High-Fidelity Image to Editable PPT"
+  short_description: "Rebuild visual decks with geometry-aware fidelity checks"
+  default_prompt: "Use $high-fidelity-image-to-editable-ppt to rebuild the input into a high-fidelity object-level editable PowerPoint PPTX."
