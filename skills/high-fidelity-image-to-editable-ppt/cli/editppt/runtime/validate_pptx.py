@@ -1039,6 +1039,11 @@ def main():
     if args.report:
         Path(args.report).parent.mkdir(parents=True, exist_ok=True)
         Path(args.report).write_text(output + "\n", encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError):
+            pass
     print(output)
     raise SystemExit(0 if report["passed"] else 1)
 
