@@ -12,7 +12,9 @@ Backend selection per run:
   OCR coordinates are rescaled to each page's actual source.png resolution
   and re-measured locally with the ink metrics.
 - Without a token, or when the service fails: the built-in offline detector
-  (`text_hints.py`) runs per page, so every page still gets hints.
+  (`text_hints.py`) writes diagnostic hints, but `editppt run next` blocks page
+  reconstruction until PaddleOCR succeeds or the user explicitly authorizes
+  offline-only hints with `editppt run allow-offline-hints`.
 
 Hint generation is best-effort: a page that fails is reported and skipped,
 and the page worker can regenerate with `editppt page hints <page_dir>`.
@@ -166,6 +168,12 @@ def main() -> int:
                         f"offline detector found {len(offline['lines'])}; using the offline result for this page",
                         file=sys.stderr,
                     )
+                    offline["backend"] = "builtin-ink"
+                    offline["paddleocr_attempt"] = {
+                        "status": "degraded",
+                        "recognized_lines": len(hints["lines"]),
+                        "reason": "PaddleOCR returned too few lines for this dense page",
+                    }
                     hints = offline
             write_hints(page_dir, hints, overlay=not args.no_overlay)
             written += 1

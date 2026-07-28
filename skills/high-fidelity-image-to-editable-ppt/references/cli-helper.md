@@ -89,7 +89,7 @@ uv tool install --force --editable <skill-root>/cli
 python3 -m pip install --user -e <skill-root>/cli
 ```
 
-`<skill-root>` is the `high-fidelity-image-to-editable-ppt` directory that contains `SKILL.md`. On Windows, use the same directory's `cli` subdirectory path.
+`<skill-root>` is the `image-to-editable-ppt` directory that contains `SKILL.md`. On Windows, use the same directory's `cli` subdirectory path.
 
 After the CLI is available, run local runtime checks:
 
@@ -207,6 +207,14 @@ editppt run hints <run>
 Purpose: regenerate `text_hints.json`/`text_hints.png` for every page of a prepared run — for example right after configuring a PaddleOCR token, so the current run gets content-aware hints without re-running prepare.
 
 When used with a configured PaddleOCR token, this command calls the external OCR service. If the runtime requires approval for network access, request it with the task-local conversion-data justification from `SKILL.md`; see `SKILL.md` Phase 1 for the approval-rejection policy.
+
+`editppt run next <run>` refuses to dispatch while any page uses `builtin-ink`, has missing hints, or records a degraded PaddleOCR attempt. After a real PaddleOCR retry fails, the only override is explicit and auditable:
+
+```bash
+editppt run allow-offline-hints <run> --reason "user explicitly approved local-only text hints"
+```
+
+Never issue this command without the user's explicit approval. The authorization is persisted as `deck_manifest.json.text_hints_policy`.
 
 ```bash
 editppt page hints pages/page_001

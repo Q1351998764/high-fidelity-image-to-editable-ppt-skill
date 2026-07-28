@@ -223,7 +223,7 @@ Positioned build object requirements:
 - Every line shape must have `points_px`.
 - Every curve shape must have valid `bezier_px` cubic segments. `polygon_px` is not an acceptable replacement for a smooth source curve.
 
-`text_inventory` and `visual_inventory` are only inventories; they do not substitute for positioned `text_boxes`, `images`, and `shapes`. The manifest must be sufficient to rebuild the page without reading any custom page script.
+`text_inventory` and `visual_inventory` are only inventories; they do not substitute for positioned `text_boxes`, `images`, and `shapes`. The manifest must be sufficient to rebuild the page without reading any custom page script. Every positioned `images[]` object must be mapped by a `visual_inventory[].object_ids` entry, or by an exact asset path only when that path is used once. Reusing one asset path for multiple positioned images requires both stable object-id mappings and a non-empty `reuse_reason` on every reuse; one generic inventory sentence cannot cover many unrelated icons.
 
 Missing coordinates are page-contract violations. The runtime must reject them during `editppt run record` and deck validation because otherwise missing values fall back to default positions such as the top-left corner.
 
@@ -271,7 +271,7 @@ Text alignment:
 }
 ```
 
-`geometry_inventory` is the hard visual-geometry contract for small components that whole-page review commonly misses. It must cover every shape whose `semantic_role` is `axis` or `bracket`, and every curve whose `curve_role` is `legend-symbol`. Each entry uses a tight source-pixel ROI; `editppt page validate` maps that ROI into `preview.png`, compares source/render edges, and fails missing or distorted geometry.
+`geometry_inventory` is the hard visual-geometry contract for small components that whole-page review commonly misses. It cannot be empty when the page contains visible lines or curves. It must cover every shape whose `semantic_role` is `axis` or `bracket`, and every curve whose `curve_role` is `legend-symbol` or `native-structural`. Each entry uses a tight source-pixel ROI; `editppt page validate` maps that ROI into `preview.png`, compares source/render edges, and fails missing or distorted geometry. Setting `quality_checks.geometry_inventory_checked=true` does not waive missing inventory entries or failed pixel evidence.
 
 Axis example:
 
@@ -323,7 +323,9 @@ Legend example:
 
 A `legend-symbol` curve must carry the same `curve_trace.trace_points_px` and `max_chamfer_px` evidence as a data curve. `baseline_relation` is `none`, `separated`, or `touching`; declare the actual source relationship rather than imposing a universal gap.
 
-Every curve records `curve_role`: `data-stroke`, `area-fill`, `legend-symbol`, or `native-structural`. A `data-stroke` must be open, use `fill: none`, and include `curve_trace.trace_points_px`, `curve_trace.max_chamfer_px`, `plot_area_px`, and `axis_clearance_px` (`left`, `top`, `right`, `bottom`). Validation samples the cubic geometry, rejects axis-clearance entry, and rejects source-to-curve Chamfer error above the declared limit. Under-curve shading is a separate closed `area-fill` shape.
+Every visible line and curve records a non-empty `semantic_role`. Every curve records `curve_role`: `data-stroke`, `area-fill`, `legend-symbol`, or `native-structural`. Every non-`area-fill` curve, including `native-structural`, must include `curve_trace.trace_points_px` and `curve_trace.max_chamfer_px`; misclassifying a chart curve as structural therefore cannot bypass source-to-curve Chamfer validation. A `data-stroke` must additionally be open, use `fill: none`, and include `plot_area_px` and `axis_clearance_px` (`left`, `top`, `right`, `bottom`). Under-curve shading is a separate closed `area-fill` shape.
+
+Text collision validation is global and deterministic. Every `text_boxes[].box_px` participates even when no `global_layout` constraint names it. A material overlap fails validation unless one of the two text boxes explicitly lists the other's stable id in `allow_overlap_with`; use that exception only when the source intentionally superimposes the text.
 
 Complex arrow presets (`curved*Arrow`, `bentArrow`, `circularArrow`) require `source_role: native-structural` plus `geometry_comparison_note`. Decorative or style-specific arrows must instead be source-faithfully separated as foreground assets.
 

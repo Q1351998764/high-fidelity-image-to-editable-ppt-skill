@@ -130,6 +130,16 @@ def geometry_inventory_violations(manifest, source_path=None, preview_path=None)
     if not isinstance(inventory, list):
         return ([{"field": "geometry_inventory", "reason": "geometry_inventory must list every axis, bracket, legend symbol, and structural curve"}], results)
 
+    visible_geometry = [
+        shape for shape in manifest.get("shapes", [])
+        if isinstance(shape, dict) and (shape.get("type") in {"line", "curve"} or shape.get("bezier_px"))
+    ]
+    if visible_geometry and not inventory:
+        violations.append({
+            "field": "geometry_inventory",
+            "reason": "geometry_inventory cannot be empty when the page contains visible lines or curves",
+        })
+
     objects = _shape_map(manifest)
     source_image = cv2.imread(str(source_path), cv2.IMREAD_COLOR) if source_path and Path(source_path).exists() else None
     preview_image = cv2.imread(str(preview_path), cv2.IMREAD_COLOR) if preview_path and Path(preview_path).exists() else None
@@ -249,7 +259,10 @@ def geometry_inventory_violations(manifest, source_path=None, preview_path=None)
     required_roles = {
         str(shape.get("id"))
         for shape in manifest.get("shapes", [])
-        if shape.get("id") and (shape.get("semantic_role") in {"axis", "bracket"} or shape.get("curve_role") == "legend-symbol")
+        if shape.get("id") and (
+            shape.get("semantic_role") in {"axis", "bracket"}
+            or shape.get("curve_role") in {"legend-symbol", "native-structural"}
+        )
     }
     missing_coverage = sorted(required_roles - covered)
     if missing_coverage:

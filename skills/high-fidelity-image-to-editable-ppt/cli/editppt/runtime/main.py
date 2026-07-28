@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified CLI for the high-fidelity-image-to-editable-ppt skill."""
+"""Unified CLI for the image-to-editable-ppt skill."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from deck_run_state import (
     load_run_state,
     page_dir_for,
     run_dir_from_target,
+    save_deck,
+    now_iso,
 )
 from formula_renderer import (
     FormulaRenderError,
@@ -192,6 +194,25 @@ def cmd_status(args: argparse.Namespace) -> int:
     return run_script("page_job_status.py", argv)
 
 
+def cmd_allow_offline_hints(args: argparse.Namespace) -> int:
+    run_dir = run_dir_from_target(args.run)
+    reason = str(args.reason or "").strip()
+    if len(reason) < 8:
+        raise SystemExit("--reason must record a meaningful, explicit user-approved reason")
+    deck = load_deck(run_dir)
+    deck["text_hints_policy"] = {
+        "mode": "offline-authorized",
+        "reason": reason,
+        "authorized_at": now_iso(),
+    }
+    save_deck(run_dir, deck)
+    return print_json({
+        "run_dir": str(run_dir),
+        "text_hints_policy": deck["text_hints_policy"],
+        "warning": "Offline hints contain geometry only and may substantially reduce text reconstruction quality.",
+    })
+
+
 def cmd_next(args: argparse.Namespace) -> int:
     run_dir = run_dir_from_target(args.run)
     deck = load_deck(run_dir)
@@ -201,6 +222,43 @@ def cmd_next(args: argparse.Namespace) -> int:
     dispatchable = [page.get("page_id") for page in dispatchable_pages(jobs)]
     slots = dispatch_slots_available(jobs)
     pages = jobs.get("pages", [])
+
+    hints_policy = deck.get("text_hints_policy", {})
+    offline_authorized = hints_policy.get("mode") == "offline-authorized"
+    non_paddle_pages = []
+    for page in pages:
+        hints_path = page_dir_for(run_dir, page) / "text_hints.json"
+        try:
+            hints = json.loads(hints_path.read_text(encoding="utf-8"))
+            backend_name = str(hints.get("backend") or "missing")
+        except (OSError, ValueError, TypeError):
+            backend_name = "missing"
+        if backend_name != "paddleocr-vl":
+            non_paddle_pages.append({"page_id": page.get("page_id"), "backend": backend_name})
+
+    if non_paddle_pages and not offline_authorized:
+        from runtime_env import config_path, read_config_file
+
+        token_configured = bool(
+            os.environ.get("PADDLE_OCR_TOKEN", "").strip()
+            or str(read_config_file(config_path()).get("PADDLE_OCR_TOKEN", "")).strip()
+        )
+        if token_configured:
+            reason = "PaddleOCR token is configured, but one or more pages fell back to non-Paddle text hints"
+            next_command = f"{cli_prog()} run hints {run_dir}"
+        else:
+            reason = "PaddleOCR token is not configured; explicit user authorization is required before using offline text hints"
+            next_command = "editppt config --paddle-ocr-token <token>"
+        payload = {
+            "run_dir": str(run_dir),
+            "stage": "ocr_quality_gate",
+            "reason": reason,
+            "non_paddle_pages": non_paddle_pages,
+            "next_command": next_command,
+            "offline_override_command": f'{cli_prog()} run allow-offline-hints {run_dir} --reason "<user-approved reason>"',
+            "agent_focus": "Do not reconstruct or dispatch pages. Restore PaddleOCR hints, or obtain explicit user approval and record the offline override.",
+        }
+        return print_json(payload) if args.json else _print_next_text(payload)
 
     if not backend:
         payload = {
@@ -525,7 +583,7 @@ contract. The standalone CLI default is editppt-image-cli.
   editppt prepare slide.png
   editppt prepare slide.png --image-backend builtin-imagegen
   editppt prepare deck.pdf --max-concurrent-pages 3
-  editppt prepare a.png b.png --out-root output/high-fidelity-image-to-editable-ppt
+  editppt prepare a.png b.png --out-root output/image-to-editable-ppt
 """,
     )
     prepare.add_argument("inputs", nargs="+", metavar="INPUT", help="Input image, PDF, PPT, or PPTX path. Repeat for multiple images.")
@@ -655,6 +713,16 @@ Use this when a parent Agent selects image_gen.imagegen or when forcing other ba
         "deck_text_hints.py",
         [args.run, "--timeout", str(args.timeout)] + (["--no-overlay"] if args.no_overlay else []),
     ))
+
+    allow_offline = run_sub.add_parser(
+        "allow-offline-hints",
+        help="Record explicit user authorization to continue without PaddleOCR-VL hints.",
+        description="This is the only supported override for the OCR quality gate. The reason is persisted in deck_manifest.json for auditability.",
+        formatter_class=HELP_FORMATTER,
+    )
+    allow_offline.add_argument("run", metavar="RUN", help="Run directory or deck_manifest.json path.")
+    allow_offline.add_argument("--reason", required=True, help="Meaningful reason reflecting the user's explicit approval of offline-only hints.")
+    allow_offline.set_defaults(func=cmd_allow_offline_hints)
 
     finalize = run_sub.add_parser(
         "finalize",

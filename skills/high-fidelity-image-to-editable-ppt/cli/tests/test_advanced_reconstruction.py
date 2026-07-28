@@ -1,9 +1,14 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -15,11 +20,86 @@ from build_pptx_from_manifest import write_pptx
 from layout_optimizer import optimize_manifest
 from vectorize_icon import vectorize
 from trace_plot_curve import trace_curve, trace_fragment
-from validate_pptx import office_schema_violations, quality_contract_violations
+from main import cmd_allow_offline_hints, cmd_next
+from validate_pptx import (
+    office_schema_violations,
+    quality_contract_violations,
+    text_overlap_violations,
+    visual_inventory_coverage_violations,
+)
 from visual_fidelity import edge_fidelity_metrics, geometry_inventory_violations
 
 
 class AdvancedReconstructionTests(unittest.TestCase):
+    def test_ocr_gate_blocks_builtin_fallback_and_explicit_override_allows_next(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            page_dir = run_dir / "pages" / "page_001"
+            page_dir.mkdir(parents=True)
+            (run_dir / "deck_manifest.json").write_text(json.dumps({"image_backend": {"kind": "test"}}), encoding="utf-8")
+            (run_dir / "page_jobs.json").write_text(json.dumps({
+                "max_concurrent_pages": 1,
+                "pages": [{"page_id": "page_001", "page_dir": "pages/page_001", "status": "pending"}],
+            }), encoding="utf-8")
+            (page_dir / "text_hints.json").write_text(json.dumps({"backend": "builtin-ink", "lines": []}), encoding="utf-8")
+
+            out = StringIO()
+            with patch.dict(os.environ, {"PADDLE_OCR_TOKEN": "configured-test-token"}), redirect_stdout(out):
+                self.assertEqual(cmd_next(SimpleNamespace(run=str(run_dir), json=True)), 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual(payload["stage"], "ocr_quality_gate")
+            self.assertIn("fell back", payload["reason"])
+
+            with redirect_stdout(StringIO()):
+                cmd_allow_offline_hints(SimpleNamespace(run=str(run_dir), reason="User explicitly approved local-only OCR hints"))
+            out = StringIO()
+            with patch.dict(os.environ, {"PADDLE_OCR_TOKEN": "configured-test-token"}), redirect_stdout(out):
+                self.assertEqual(cmd_next(SimpleNamespace(run=str(run_dir), json=True)), 0)
+            self.assertEqual(json.loads(out.getvalue())["stage"], "rebuild_page_locally")
+
+    def test_empty_geometry_inventory_rejected_when_lines_or_curves_exist(self):
+        manifest = {
+            "shapes": [{"id": "line", "type": "line", "semantic_role": "divider", "points_px": [0, 0, 10, 10]}],
+            "geometry_inventory": [],
+        }
+        violations, _ = geometry_inventory_violations(manifest)
+        self.assertTrue(any("cannot be empty" in item["reason"] for item in violations))
+
+    def test_native_structural_curve_requires_source_trace(self):
+        manifest = {
+            "visual_inventory": [],
+            "background_strategy": {"mode": "native"},
+            "quality_checks": {},
+            "shapes": [{
+                "id": "curve", "type": "curve", "semantic_role": "structural-connector",
+                "curve_role": "native-structural", "bezier_px": {"start": [0, 0], "segments": [{"c1": [1, 1], "c2": [2, 2], "end": [3, 3]}]},
+            }],
+        }
+        reasons = [item["reason"] for item in quality_contract_violations(manifest)]
+        self.assertTrue(any("every non-fill curve" in reason for reason in reasons))
+
+    def test_visual_inventory_must_cover_every_image_and_explain_reuse(self):
+        manifest = {
+            "images": [
+                {"id": "one", "path": "assets/reused.png"},
+                {"id": "two", "path": "assets/reused.png"},
+            ],
+            "visual_inventory": [{"id": "v", "object_ids": ["one"], "path": "assets/reused.png"}],
+        }
+        violations = visual_inventory_coverage_violations(manifest)
+        self.assertTrue(any(item["field"] == "images[1]" for item in violations))
+        self.assertTrue(any(item["field"] == "images[1].reuse_reason" for item in violations))
+        self.assertEqual(sum("reuse_reason" in item["field"] for item in violations), 2)
+
+    def test_material_text_overlap_requires_explicit_allowlist(self):
+        manifest = {"text_boxes": [
+            {"id": "a", "box_px": [10, 10, 100, 30]},
+            {"id": "b", "box_px": [20, 15, 100, 30]},
+        ]}
+        self.assertEqual(len(text_overlap_violations(manifest)), 1)
+        manifest["text_boxes"][0]["allow_overlap_with"] = ["b"]
+        self.assertEqual(text_overlap_violations(manifest), [])
+
     def test_generated_package_passes_core_ooxml_schema_guard(self):
         manifest = {
             "slide": {"width": 13.333, "height": 7.5},

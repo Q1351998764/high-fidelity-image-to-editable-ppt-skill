@@ -4,6 +4,7 @@ import hashlib
 import json
 import posixpath
 import re
+import sys
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -148,6 +149,85 @@ def visual_item_path(item):
         if isinstance(value, str) and value.strip():
             return Path(value).as_posix()
     return None
+
+
+def visual_inventory_coverage_violations(manifest):
+    """Require an auditable one-to-one mapping from positioned images to inventory entries."""
+    violations = []
+    inventory = manifest.get("visual_inventory", [])
+    covered_ids = set()
+    covered_paths = set()
+    for item in inventory if isinstance(inventory, list) else []:
+        if not isinstance(item, dict):
+            continue
+        object_ids = item.get("object_ids", [])
+        if isinstance(object_ids, list):
+            covered_ids.update(str(value) for value in object_ids if value)
+        path = visual_item_path(item)
+        if path:
+            covered_paths.add(path)
+
+    images = [item for item in manifest.get("images", []) if isinstance(item, dict)]
+    image_path_counts = {}
+    for image in images:
+        image_path = Path(image.get("path", "")).as_posix() if image.get("path") else ""
+        if image_path:
+            image_path_counts[image_path] = image_path_counts.get(image_path, 0) + 1
+    for index, image in enumerate(images):
+        object_id = str(image.get("id") or "")
+        path = Path(image.get("path", "")).as_posix() if image.get("path") else ""
+        path_is_unambiguous = path and image_path_counts.get(path, 0) == 1 and path in covered_paths
+        if not ((object_id and object_id in covered_ids) or path_is_unambiguous):
+            violations.append({
+                "field": f"images[{index}]",
+                "reason": "positioned image is not mapped by visual_inventory.object_ids or an exact inventory asset path",
+            })
+
+    for index, image in enumerate(images):
+        path = Path(image.get("path", "")).as_posix() if image.get("path") else ""
+        if path and image_path_counts.get(path, 0) > 1 and not str(image.get("reuse_reason") or "").strip():
+            violations.append({
+                "field": f"images[{index}].reuse_reason",
+                "path": path,
+                "reason": "the same asset path is used by multiple positioned images; each reuse requires an explicit reuse_reason",
+            })
+    return violations
+
+
+def text_overlap_violations(manifest):
+    """Detect undeclared, material text collisions even when no layout constraint declared them."""
+    violations = []
+    boxes = [item for item in manifest.get("text_boxes", []) if isinstance(item, dict) and item.get("box_px")]
+    for left_index, left in enumerate(boxes):
+        try:
+            lx, ly, lw, lh = [float(value) for value in left["box_px"]]
+        except (TypeError, ValueError):
+            continue
+        for right in boxes[left_index + 1:]:
+            try:
+                rx, ry, rw, rh = [float(value) for value in right["box_px"]]
+            except (TypeError, ValueError):
+                continue
+            overlap_w = min(lx + lw, rx + rw) - max(lx, rx)
+            overlap_h = min(ly + lh, ry + rh) - max(ly, ry)
+            if overlap_w <= 2.0 or overlap_h <= 2.0:
+                continue
+            smaller_area = max(1.0, min(lw * lh, rw * rh))
+            ratio = overlap_w * overlap_h / smaller_area
+            if ratio < 0.20:
+                continue
+            left_id = str(left.get("id") or "")
+            right_id = str(right.get("id") or "")
+            left_allowed = {str(value) for value in left.get("allow_overlap_with", [])}
+            right_allowed = {str(value) for value in right.get("allow_overlap_with", [])}
+            if right_id in left_allowed or left_id in right_allowed:
+                continue
+            violations.append({
+                "field": "text_boxes",
+                "object_ids": [left_id or f"index:{left_index}", right_id or "unidentified"],
+                "reason": f"text boxes overlap by {ratio:.1%} of the smaller box without allow_overlap_with",
+            })
+    return violations
 
 
 def is_foreground_visual_item(item):
@@ -317,6 +397,8 @@ def quality_contract_violations(manifest):
                 )
 
     for index, shape in enumerate(manifest.get("shapes", [])):
+        if (shape.get("type") in {"line", "curve"} or shape.get("bezier_px")) and not str(shape.get("semantic_role") or "").strip():
+            violations.append({"field": f"shapes[{index}].semantic_role", "reason": "every visible line and curve requires an explicit semantic_role"})
         if shape.get("type") == "line":
             for key in ("start_arrow", "end_arrow"):
                 marker = shape.get(key, "none") or "none"
@@ -333,20 +415,21 @@ def quality_contract_violations(manifest):
             role = shape.get("curve_role")
             if role not in {"data-stroke", "area-fill", "legend-symbol", "native-structural"}:
                 violations.append({"field": f"shapes[{index}].curve_role", "reason": "curve_role must classify the curve as data-stroke, area-fill, legend-symbol, or native-structural"})
-            if role == "data-stroke":
-                if curve and curve.get("closed"):
-                    violations.append({"field": f"shapes[{index}].bezier_px.closed", "reason": "a data curve stroke must stay open; put under-curve fill in a separate area-fill shape"})
-                if shape.get("fill") not in (None, "none"):
-                    violations.append({"field": f"shapes[{index}].fill", "reason": "a data curve stroke cannot carry area fill; use a separate area-fill shape"})
+            if role != "area-fill":
                 trace = shape.get("curve_trace")
                 if not isinstance(trace, dict) or not trace.get("trace_points_px"):
-                    violations.append({"field": f"shapes[{index}].curve_trace", "reason": "data curves must be traced from source pixels before Bezier fitting"})
+                    violations.append({"field": f"shapes[{index}].curve_trace", "reason": "every non-fill curve must be traced from source pixels before Bezier fitting"})
                 elif curve and curve.get("segments"):
                     sampled = sampled_curve(curve, 64)
                     chamfer = symmetric_chamfer(trace["trace_points_px"], sampled)
                     limit = float(trace.get("max_chamfer_px", 1.5))
                     if chamfer > limit:
                         violations.append({"field": f"shapes[{index}].curve_trace", "reason": f"source-to-Bezier chamfer error {chamfer:.3f}px exceeds {limit:.3f}px"})
+            if role == "data-stroke":
+                if curve and curve.get("closed"):
+                    violations.append({"field": f"shapes[{index}].bezier_px.closed", "reason": "a data curve stroke must stay open; put under-curve fill in a separate area-fill shape"})
+                if shape.get("fill") not in (None, "none"):
+                    violations.append({"field": f"shapes[{index}].fill", "reason": "a data curve stroke cannot carry area fill; use a separate area-fill shape"})
                 plot = shape.get("plot_area_px")
                 clearance = shape.get("axis_clearance_px")
                 if not plot or not isinstance(clearance, dict):
@@ -419,6 +502,8 @@ def quality_contract_violations(manifest):
             if image["vectorization"].get("embedded_raster") is not False:
                 violations.append({"field": f"images[{index}].vectorization", "reason": "vectorized icons must not embed a raster payload"})
     violations.extend(foreground_asset_contract_violations(manifest))
+    violations.extend(visual_inventory_coverage_violations(manifest))
+    violations.extend(text_overlap_violations(manifest))
     return violations
 
 
@@ -696,6 +781,11 @@ def validate_deck(args):
     if args.report:
         Path(args.report).parent.mkdir(parents=True, exist_ok=True)
         Path(args.report).write_text(output + "\n", encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError):
+            pass
     print(output)
     raise SystemExit(0 if report["passed"] else 1)
 
