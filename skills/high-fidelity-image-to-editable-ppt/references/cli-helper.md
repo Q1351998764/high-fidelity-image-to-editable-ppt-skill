@@ -196,7 +196,7 @@ Purpose: create `split_assets_contact.png`, the origin-versus-preview comparison
 editppt page validate pages/page_001
 ```
 
-Purpose: validate `page.pptx` against `manifest.json` with the same checks `editppt run record` will run, including geometry inventory, whole-page reverse source coverage, plot-side micro annotations, trace-to-source stroke coverage, tolerant palette/chroma and state-cell Lab color checks, and tight-ROI source-versus-preview fidelity (record additionally verifies the full artifact set, hashes, and top-level `passed: true`). Run it before returning so failures are fixed inside the page instead of bouncing back from the parent's record step. Optional `--source`, `--preview`, and `--report` override the page-local defaults.
+Purpose: validate `page.pptx` against `manifest.json` with the same manifest-contract checks `editppt run record` will run, including `geometry_inventory` axis markers, bracket families, legend traces/baselines, and tight-ROI source-versus-preview edge fidelity (record additionally verifies the full artifact set, hashes, and top-level `passed: true`). Run it before returning so failures are fixed inside the page instead of bouncing back from the parent's record step. Optional `--source`, `--preview`, and `--report` override the page-local defaults.
 
 ## Text Measurement Commands
 
