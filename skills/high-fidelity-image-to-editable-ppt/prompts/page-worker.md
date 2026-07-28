@@ -10,6 +10,8 @@ Page id: {{PAGE_ID}}
 Page dir: {{PAGE_DIR}}
 Source image: {{SOURCE_IMAGE}}
 
+All fidelity decisions are source-adaptive. Do not insert page-specific coordinates, English-id keyword rules, fixed ROI-span requirements, fixed hue buckets, or manifest-provided color tolerances. Measure micro-object scale from the page, curve completeness from the actual source-colored stroke, and repeated state cells from size/alignment/spacing; allow mild color drift while preserving semantic color/state differences.
+
 You own only this Page dir. Do not edit deck_manifest.json, page_jobs.json, notes_manifest.json, final outputs, the original input, or any other page directory.
 
 MANDATORY FIRST ACTION — before looking at the source image, before any decision, before any tool call other than reading: read these three files in full. Do not skim, do not rely on prior knowledge of them, do not start reconstruction first and consult them later. Every past failure mode of this skill is encoded in them; any decision made without having read them is invalid and will be redone.
