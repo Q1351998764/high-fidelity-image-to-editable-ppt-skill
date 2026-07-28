@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 from build_pptx_from_manifest import TEXT_ALIGNMENTS, TEXT_VERTICAL_ALIGNMENTS, normalize_manifest
 from bezier_curve import sampled_curve
 from trace_plot_curve import symmetric_chamfer
+from universal_fidelity import universal_fidelity_violations
 from visual_fidelity import ALLOWED_MARKERS, geometry_inventory_violations
 
 
@@ -44,6 +45,10 @@ REQUIRED_QUALITY_CHECKS = {
     "legend_source_traced",
     "axis_marker_checked",
     "bracket_geometry_checked",
+    "source_coverage_checked",
+    "micro_annotations_checked",
+    "curve_source_coverage_checked",
+    "color_semantics_checked",
 }
 COMPLEX_ARROW_PRESETS = {"curvedRightArrow", "curvedLeftArrow", "curvedUpArrow", "curvedDownArrow", "bentArrow", "circularArrow"}
 FOREGROUND_TERMS = {
@@ -881,6 +886,10 @@ def main():
         "warnings": [],
         "page_contract_violations": [],
         "visual_fidelity_checks": [],
+        "source_coverage_check": {},
+        "micro_annotation_checks": [],
+        "curve_source_checks": [],
+        "color_fidelity_checks": [],
     }
 
     try:
@@ -1010,12 +1019,18 @@ def main():
     if not preview_path.is_absolute():
         preview_path = manifest_base / preview_path
     geometry_violations, fidelity_results = geometry_inventory_violations(raw_manifest, source_path, preview_path)
+    universal_violations, universal_results = universal_fidelity_violations(raw_manifest, source_path, preview_path)
     report["visual_fidelity_checks"] = fidelity_results
+    report["source_coverage_check"] = universal_results["source_coverage"]
+    report["micro_annotation_checks"] = universal_results["micro_annotations"]
+    report["curve_source_checks"] = universal_results["curve_source_coverage"]
+    report["color_fidelity_checks"] = universal_results["color_fidelity"]
     report["page_contract_violations"] = (
         authoring_violations
         + page_contract_violations(manifest)
         + quality_contract_violations(raw_manifest)
         + geometry_violations
+        + universal_violations
     )
 
     report["passed"] = (

@@ -201,6 +201,7 @@ Must contain:
 - `text_inventory`
 - `visual_inventory`
 - `geometry_inventory`
+- `micro_annotation_inventory` when the page contains plots
 - `background_strategy`
 - `quality_checks`
 - `text_boxes`
@@ -267,11 +268,21 @@ Text alignment:
   "structural_fidelity_checked": true,
   "legend_source_traced": true,
   "axis_marker_checked": true,
-  "bracket_geometry_checked": true
+  "bracket_geometry_checked": true,
+  "source_coverage_checked": true,
+  "micro_annotations_checked": true,
+  "curve_source_coverage_checked": true,
+  "color_semantics_checked": true
 }
 ```
 
+The four final flags are evidence-backed gates rather than self-attestations. `editppt page validate` recomputes them from `source.png`, `preview.png`, and positioned objects. Setting a flag to `true` never waives a failed measurement.
+
 `geometry_inventory` is the hard visual-geometry contract for small components that whole-page review commonly misses. It cannot be empty when the page contains visible lines or curves. It must cover every shape whose `semantic_role` is `axis` or `bracket`, and every curve whose `curve_role` is `legend-symbol` or `native-structural`. Each entry uses a tight source-pixel ROI; `editppt page validate` maps that ROI into `preview.png`, compares source/render edges, and fails missing or distorted geometry. Setting `quality_checks.geometry_inventory_checked=true` does not waive missing inventory entries or failed pixel evidence.
+
+`source_coverage_policy` controls the whole-page reverse-coverage gate. The runtime aligns `preview.png` back to source pixels, masks declared editable text boxes, and finds source edges that no rendered object explains. Default tolerances allow antialiasing and minor rendering drift. Optional `ignore_regions` entries require `box_px` plus a concrete `reason`; one ignored region is capped at 5% and all ignored regions at 12% of the page, so they cannot hide an omitted section.
+
+Pages with plots require `micro_annotation_inventory`. Inventory every small axis label (`t`, `%`, units, tick values), time-direction marker, and small axis arrow with `id`, `kind`, `object_ids`, and a tight `source_box_px`. Allowed kinds are `axis-label`, `time-label`, `percent-label`, `axis-arrow`, `tick-label`, and `micro-symbol`. A genuine label-free sparkline may use an empty list only with `micro_annotation_audit: {"none_found": true, "reason": "..."}`. Multi-scale reverse coverage independently reports unexplained small edge components around plots, so the audit cannot hide a visible omitted item.
 
 Axis example:
 
@@ -323,7 +334,9 @@ Legend example:
 
 A `legend-symbol` curve must carry the same `curve_trace.trace_points_px` and `max_chamfer_px` evidence as a data curve. `baseline_relation` is `none`, `separated`, or `touching`; declare the actual source relationship rather than imposing a universal gap.
 
-Every visible line and curve records a non-empty `semantic_role`. Every curve records `curve_role`: `data-stroke`, `area-fill`, `legend-symbol`, or `native-structural`. Every non-`area-fill` curve, including `native-structural`, must include `curve_trace.trace_points_px` and `curve_trace.max_chamfer_px`; misclassifying a chart curve as structural therefore cannot bypass source-to-curve Chamfer validation. A `data-stroke` must additionally be open, use `fill: none`, and include `plot_area_px` and `axis_clearance_px` (`left`, `top`, `right`, `bottom`). Under-curve shading is a separate closed `area-fill` shape.
+Every visible line and curve records a non-empty `semantic_role`. Every curve records `curve_role`: `data-stroke`, `area-fill`, `legend-symbol`, or `native-structural`. Every non-`area-fill` curve, including `native-structural`, must include `curve_trace.trace_points_px`, `curve_trace.source_roi_px`, and `curve_trace.max_chamfer_px`; misclassifying a chart curve as structural therefore cannot bypass validation. The runtime checks three independent relationships: Bézier-to-trace Chamfer error, trace-point support by source-color pixels, and how much of the source-colored stroke/primary ROI the trace covers. A short but internally well-fitted wrong segment therefore fails. A `data-stroke` must additionally be open, use `fill: none`, and include `plot_area_px` and `axis_clearance_px` (`left`, `top`, `right`, `bottom`). Under-curve shading is a separate closed `area-fill` shape.
+
+Color validation is intentionally tolerant. Raster images are checked for chroma retention and broad hue-group diversity, not exact RGB equality; normal compression, antialiasing, brightness changes, and mild hue shifts pass. The gate rejects semantic collapse such as a multicolor gauge becoming grayscale. Small state cells and bars compare their declared fill with the median source interior in CIE Lab space using default DeltaE tolerance 34 (hard maximum 45), which catches wrong red/empty counts without demanding pixel-perfect color.
 
 Text collision validation is global and deterministic. Every `text_boxes[].box_px` participates even when no `global_layout` constraint names it. A material overlap fails validation unless one of the two text boxes explicitly lists the other's stable id in `allow_overlap_with`; use that exception only when the source intentionally superimposes the text.
 

@@ -36,6 +36,8 @@ Build a complete inventory before deciding anything, so that no object's source 
 - Foreground visual objects: icons, pictograms, logo-like marks, foreground photos, screenshots, image blocks, textures, illustrations, people, plants, devices, hand-drawn marks, stickers, decorative lines, badges.
 - PPT native element candidates: text, text boxes, cards, panels, tables, axes, lines, flow boxes, dividers, simple arrows.
 - Geometry inventory: every axis and its two endpoint markers, every bracket/brace/parenthesis and its family/orientation, every legend curve and its baseline relationship, and every other small structural curve. Record tight source-pixel ROIs; do not merge several unrelated components into one check.
+- Micro-annotation inventory: at source-pixel zoom, record every plot-side `t`, `%`, unit/tick label, and tiny arrowhead as its own expected object. Treat `t` plus a right arrow as a time-axis label and a real line-end marker, never as a decorative text glyph.
+- Color-state inventory: for multicolor icons record the expected broad palette groups; for repeated state cells record the ordered filled/empty sequence or count. Exact RGB matching is unnecessary, but color-to-grayscale collapse and changed state counts are failures.
 - Formula candidates: objective functions, constraints, matrices, fractions, roots, cases, multiline equation groups, ordinary math expressions. List formulas separately; never group them with ordinary text.
 - Corner geometry for every rectangle/card/table outline: straight, slight radius, obvious radius, pill.
 
@@ -195,7 +197,7 @@ If the machine lacks a TeX engine or converter, or compilation fails: still deli
 
 ### 3.3 Structural Primitives and Layout Objects
 
-Every non-fill curve must be traced directly from source pixels before fitting; this includes data, legend, connector, bracket, and other native structural curves. For data curves use `editppt curve trace`; never reuse a sparse hand-authored polygon or fit only old manifest vertices. Give the tracer a tight ROI, select the source stroke color, inspect the emitted trace preview, and retain `curve_trace.trace_points_px` in the manifest. `curve fit` is allowed for known non-data points only when the same shape still carries source-trace evidence; changing `curve_role` never waives Chamfer validation.
+Every non-fill curve must be traced directly from source pixels before fitting; this includes data, legend, connector, bracket, and other native structural curves. For data curves use `editppt curve trace`; never reuse a sparse hand-authored polygon or fit only old manifest vertices. Give the tracer a tight ROI, select the source stroke color, inspect the emitted trace preview, and retain both `curve_trace.trace_points_px` and `curve_trace.source_roi_px`. Confirm that the trace covers the source stroke across its primary ROI rather than merely fitting one short valid-looking segment. `curve fit` is allowed for known non-data points only when the same shape still carries source-trace evidence; changing `curve_role` never waives Chamfer or trace-to-source coverage validation.
 
 Legend curves follow the same source-trace rule as data curves. A small legend glyph is not exempt because it is decorative: preserve its source bounding-box aspect ratio and record whether it is separated from, touches, or intentionally crosses its baseline. If separated, declare the minimum clearance and the baseline line ids.
 
@@ -264,6 +266,8 @@ Structure and artifacts:
 - `page.pptx` builds from `manifest.json` and opens; `preview.png` exists; `split_assets_contact.png` exists and shows an origin-versus-preview comparison.
 - Smooth source curves remain editable cubic paths rather than visible polylines.
 - Every non-fill curve follows a pixel trace of the source and passes its Chamfer-error limit; data curves additionally stay clear of protected axes.
+- Whole-page reverse coverage has no unexplained structural hotspot, and every plot-side micro annotation is represented in `micro_annotation_inventory`.
+- Multicolor assets retain broad chroma/palette semantics, while repeated state cells preserve their source filled/empty sequence within tolerant Lab color limits.
 - Every legend curve preserves its source proportions and satisfies its declared baseline relationship.
 - Every axis preserves its source start/end markers; a source arrowhead must remain a real editable DrawingML line end.
 - Every bracket has the correct family and orientation; curly, round, square, and measurement brackets are not interchangeable.
