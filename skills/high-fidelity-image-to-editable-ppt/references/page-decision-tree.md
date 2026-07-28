@@ -195,7 +195,7 @@ If the machine lacks a TeX engine or converter, or compilation fails: still deli
 
 ### 3.3 Structural Primitives and Layout Objects
 
-Data curves must be traced directly from source pixels with `editppt curve trace`; never reuse a sparse hand-authored polygon or fit only the old manifest vertices. Give the tracer a tight plot-interior ROI that excludes labels and most axes, select the source stroke color, and inspect the emitted trace preview. Use `curve fit` only for non-data structural curves whose exact source points are already known.
+Every non-fill curve must be traced directly from source pixels before fitting; this includes data, legend, connector, bracket, and other native structural curves. For data curves use `editppt curve trace`; never reuse a sparse hand-authored polygon or fit only old manifest vertices. Give the tracer a tight ROI, select the source stroke color, inspect the emitted trace preview, and retain `curve_trace.trace_points_px` in the manifest. `curve fit` is allowed for known non-data points only when the same shape still carries source-trace evidence; changing `curve_role` never waives Chamfer validation.
 
 Legend curves follow the same source-trace rule as data curves. A small legend glyph is not exempt because it is decorative: preserve its source bounding-box aspect ratio and record whether it is separated from, touches, or intentionally crosses its baseline. If separated, declare the minimum clearance and the baseline line ids.
 
@@ -241,7 +241,7 @@ For native text centered inside a badge or circular base, reuse the base shape's
 
 ### 3.7 Global Layout Constraint Optimization
 
-Give every participating object a stable unique `id`. Encode containment, alignment, equal spacing/size, ordered flow, and non-overlap relationships under `global_layout`, then run `editppt layout optimize <PAGE_DIR>` before building. Source coordinates remain soft visual anchors; use `locked: true` for objects that must not move. Any unresolved text overlap is a page failure.
+Give every participating object a stable unique `id`. Encode containment, alignment, equal spacing/size, ordered flow, and non-overlap relationships under `global_layout`, then run `editppt layout optimize <PAGE_DIR>` before building. Source coordinates remain soft visual anchors; use `locked: true` for objects that must not move. Validation also collision-checks every text-box pair even when no constraint named it. Any material overlap is a page failure unless the source intentionally overlaps the pair and one box explicitly records the other id in `allow_overlap_with`.
 
 For icon rows placed below plots, add an `avoid` constraint with the plot curves/axes as obstacles and move direction `down`. This prevents phones, laptops, cameras, headsets, and similar assets from drifting upward into the final plot row. Recheck their source-relative baseline after optimization.
 
@@ -263,8 +263,8 @@ Structure and artifacts:
 
 - `page.pptx` builds from `manifest.json` and opens; `preview.png` exists; `split_assets_contact.png` exists and shows an origin-versus-preview comparison.
 - Smooth source curves remain editable cubic paths rather than visible polylines.
-- Every data curve follows a pixel trace of the source, stays clear of protected axes, and passes its Chamfer-error limit.
-- Every legend curve follows a pixel trace, preserves its source proportions, and satisfies its declared baseline relationship.
+- Every non-fill curve follows a pixel trace of the source and passes its Chamfer-error limit; data curves additionally stay clear of protected axes.
+- Every legend curve preserves its source proportions and satisfies its declared baseline relationship.
 - Every axis preserves its source start/end markers; a source arrowhead must remain a real editable DrawingML line end.
 - Every bracket has the correct family and orientation; curly, round, square, and measurement brackets are not interchangeable.
 - `geometry_inventory` covers every axis, bracket, legend symbol, and structural curve, and every object-level source-versus-render edge check passes.
@@ -283,7 +283,7 @@ Background:
 
 Assets:
 
-- `visual_inventory` covers all non-text visual objects; each has an independent representation unless explicitly recorded as background; no required object is missing or stood in by a low-quality placeholder.
+- `visual_inventory` covers all non-text visual objects with structured object-id mappings; repeated asset paths have an explicit `reuse_reason`; each object has an independent representation unless explicitly recorded as background, and no required object is missing or stood in by a low-quality placeholder.
 - Every source decision follows sections 1-3: nothing marked for separation was replaced with a similar-but-different symbol, approximated with native primitives, or substituted with a source-image snippet.
 - Split assets have no fused objects, missing edges, wrong names, fragments, or cross-object shadows; alpha edges have no chroma-key remnants.
 
