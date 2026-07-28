@@ -57,31 +57,10 @@ def _preview_aligned_to_source(manifest, preview, source_width, source_height):
     return cv2.resize(content, (source_width, source_height), interpolation=cv2.INTER_AREA)
 
 
-def _scale_profile(image):
-    height, width = image.shape[:2]
-    short_side = float(min(width, height))
-    area_scale = math.sqrt((width * height) / (1600.0 * 900.0))
-    return {
-        "width": width,
-        "height": height,
-        "short_side": short_side,
-        "area_scale": max(0.25, area_scale),
-        "distance_px": max(1.25, short_side * 0.0032),
-        "micro_width_px": max(8.0, width * 0.030),
-        "micro_height_px": max(6.0, height * 0.035),
-        "plot_padding_px": max(4.0, short_side * 0.020),
-    }
-
-
 def _edges(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    non_extreme = gray[(gray > 5) & (gray < 250)]
-    median = float(np.median(non_extreme)) if non_extreme.size else float(np.median(gray))
-    spread = float(np.percentile(non_extreme, 75) - np.percentile(non_extreme, 25)) if non_extreme.size else 32.0
-    lower = int(np.clip(median - max(18.0, 0.9 * spread), 20, 110))
-    upper = int(np.clip(median + max(32.0, 1.6 * spread), lower + 25, 230))
-    return cv2.Canny(gray, lower, upper)
+    return cv2.Canny(gray, 45, 135)
 
 
 def _valid_box(value):
@@ -100,10 +79,9 @@ def _paint_box(mask, box, value=0, padding=0):
         mask[top:bottom, left:right] = value
 
 
-def _hotspots(binary, min_edge_pixels=10, max_results=40, join_radius=1):
+def _hotspots(binary, min_edge_pixels=10, max_results=40):
     original = (binary > 0).astype(np.uint8)
-    kernel_size = max(1, int(join_radius) * 2 + 1)
-    joined = cv2.dilate(original, np.ones((kernel_size, kernel_size), np.uint8), iterations=1)
+    joined = cv2.dilate(original, np.ones((3, 3), np.uint8), iterations=1)
     count, labels, stats, _centroids = cv2.connectedComponentsWithStats(joined, 8)
     results = []
     for label in range(1, count):
@@ -124,7 +102,6 @@ def reverse_source_coverage_violations(manifest, source_image, preview_image):
     if aligned is None:
         return ([{"field": "source_coverage", "reason": "preview content_box cannot be aligned to source pixels"}], {})
 
-    profile = _scale_profile(source_image)
     source_edges = _edges(source_image)
     preview_edges = _edges(aligned)
     comparison_mask = np.full(source_edges.shape, 255, dtype=np.uint8)
@@ -152,71 +129,31 @@ def reverse_source_coverage_violations(manifest, source_image, preview_image):
     if ignored_area > page_area * 0.12:
         violations.append({"field": "source_coverage_policy.ignore_regions", "reason": "ignored regions cannot cover more than 12% of the source page"})
 
-    edge_tolerance = profile["distance_px"]
-    if policy.get("edge_tolerance_px") is not None:
-        edge_tolerance = min(edge_tolerance, max(0.75, float(policy["edge_tolerance_px"])))
+    edge_tolerance = min(float(policy.get("edge_tolerance_px", 3.0)), 5.0)
     distance = cv2.distanceTransform((preview_edges == 0).astype(np.uint8), cv2.DIST_L2, 3)
     source_points = (source_edges > 0) & (comparison_mask > 0)
-    unmatched_full = source_points & (distance > edge_tolerance)
-
-    # Require the omission to survive a second scale.  This suppresses
-    # antialiasing/font-rasterization noise while retaining genuinely missing
-    # axes, labels, icons, and blocks.
-    half_width = max(1, source_image.shape[1] // 2)
-    half_height = max(1, source_image.shape[0] // 2)
-    source_half = cv2.resize(source_image, (half_width, half_height), interpolation=cv2.INTER_AREA)
-    preview_half = cv2.resize(aligned, (half_width, half_height), interpolation=cv2.INTER_AREA)
-    source_edges_half = _edges(source_half)
-    preview_edges_half = _edges(preview_half)
-    distance_half = cv2.distanceTransform((preview_edges_half == 0).astype(np.uint8), cv2.DIST_L2, 3)
-    unmatched_half = (source_edges_half > 0) & (distance_half > max(0.75, edge_tolerance / 2.0))
-    unmatched_half_full = cv2.resize(unmatched_half.astype(np.uint8), (source_image.shape[1], source_image.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
-    unmatched_half_full = cv2.dilate(unmatched_half_full.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1) > 0
-    unmatched = unmatched_full & unmatched_half_full
+    unmatched = source_points & (distance > edge_tolerance)
     source_count = int(np.count_nonzero(source_points))
     unmatched_count = int(np.count_nonzero(unmatched))
     coverage = 1.0 if source_count == 0 else 1.0 - unmatched_count / source_count
-    adaptive_min_hotspot = max(4, int(round(10.0 * profile["area_scale"])))
-    if policy.get("min_hotspot_edge_pixels") is not None:
-        adaptive_min_hotspot = min(adaptive_min_hotspot, max(3, int(policy["min_hotspot_edge_pixels"])))
-    join_radius = max(1, int(round(profile["area_scale"])))
-    hotspots = _hotspots(unmatched.astype(np.uint8) * 255, adaptive_min_hotspot, join_radius=join_radius)
+    hotspots = _hotspots(unmatched.astype(np.uint8) * 255, min(int(policy.get("min_hotspot_edge_pixels", 12)), 30))
     micro_hotspots = [
-        item for item in _hotspots(unmatched.astype(np.uint8) * 255, max(2, int(round(3 * profile["area_scale"]))), max_results=200, join_radius=join_radius)
-        if item["box_px"][2] <= profile["micro_width_px"]
-        and item["box_px"][3] <= profile["micro_height_px"]
-        and item["edge_pixels"] <= max(16, int(110 * profile["area_scale"]))
+        item for item in _hotspots(unmatched.astype(np.uint8) * 255, 3, max_results=200)
+        if item["box_px"][2] <= 45 and item["box_px"][3] <= 30 and item["edge_pixels"] <= 110
     ]
-    edge_density = source_count / max(1.0, float(np.count_nonzero(comparison_mask)))
-    adaptive_minimum_coverage = float(np.clip(0.87 - 0.60 * edge_density, 0.76, 0.86))
-    adaptive_maximum_hotspots = max(4, int(round(8.0 * profile["area_scale"] + 20.0 * edge_density)))
-    minimum_coverage = adaptive_minimum_coverage
-    maximum_hotspots = adaptive_maximum_hotspots
-    if policy.get("min_source_edge_coverage") is not None:
-        minimum_coverage = max(minimum_coverage, float(policy["min_source_edge_coverage"]))
-    if policy.get("max_unexplained_hotspots") is not None:
-        maximum_hotspots = min(maximum_hotspots, int(policy["max_unexplained_hotspots"]))
-    coverage_failed = coverage < minimum_coverage
-    hotspots_failed = len(hotspots) > maximum_hotspots
     metrics = {
         "source_edge_pixels": source_count,
         "unmatched_source_edge_pixels": unmatched_count,
         "source_edge_coverage": float(coverage),
         "unexplained_hotspots": hotspots,
         "unexplained_micro_hotspots": micro_hotspots,
-        "edge_density": float(edge_density),
-        "adaptive_edge_tolerance_px": float(edge_tolerance),
-        "adaptive_min_source_edge_coverage": minimum_coverage,
-        "adaptive_max_unexplained_hotspots": maximum_hotspots,
-        "hard_failure": bool(coverage_failed and hotspots_failed),
-        "review_only": bool(coverage_failed != hotspots_failed),
     }
-    if coverage_failed and hotspots_failed:
-        violations.append({
-            "field": "source_coverage",
-            "reason": f"multi-scale evidence agrees on omissions: edge coverage {coverage:.3f} < adaptive {minimum_coverage:.3f}, and {len(hotspots)} hotspots > adaptive {maximum_hotspots}",
-            "hotspots": hotspots[:12],
-        })
+    minimum_coverage = max(float(policy.get("min_source_edge_coverage", 0.82)), 0.75)
+    maximum_hotspots = min(int(policy.get("max_unexplained_hotspots", 8)), 20)
+    if coverage < minimum_coverage:
+        violations.append({"field": "source_coverage", "reason": f"only {coverage:.3f} of non-text source edges are explained by the preview; minimum is {minimum_coverage:.3f}"})
+    if len(hotspots) > maximum_hotspots:
+        violations.append({"field": "source_coverage", "reason": f"{len(hotspots)} unexplained source-edge hotspots exceed the allowed {maximum_hotspots}", "hotspots": hotspots[:12]})
     return violations, metrics
 
 
@@ -231,13 +168,11 @@ def micro_annotation_violations(manifest, source_image, preview_image, coverage_
     violations = []
     results = []
     plot_regions = []
-    profile = _scale_profile(source_image) if source_image is not None else None
-    plot_padding = profile["plot_padding_px"] if profile else 12.0
     for shape in manifest.get("shapes", []):
         box = shape.get("plot_area_px")
         if _valid_box(box):
             x, y, width, height = [float(value) for value in box]
-            plot_regions.append([max(0, x - plot_padding), max(0, y - plot_padding), width + 2 * plot_padding, height + 2 * plot_padding])
+            plot_regions.append([max(0, x - 30), max(0, y - 30), width + 60, height + 60])
     if not plot_regions:
         return violations, results
 
@@ -281,12 +216,7 @@ def micro_annotation_violations(manifest, source_image, preview_image, coverage_
             preview_crop = _crop(preview_image, preview_box)
             if source_crop is not None and preview_crop is not None:
                 from visual_fidelity import edge_fidelity_metrics
-                local_short_side = min(source_crop.shape[:2])
-                adaptive_tolerance = max(0.8, min(profile["distance_px"] if profile else 2.5, local_short_side * 0.12))
-                requested_tolerance = entry.get("edge_tolerance_px")
-                if requested_tolerance is not None:
-                    adaptive_tolerance = min(adaptive_tolerance, max(0.5, float(requested_tolerance)))
-                metrics = edge_fidelity_metrics(source_crop, preview_crop, adaptive_tolerance)
+                metrics = edge_fidelity_metrics(source_crop, preview_crop, float(entry.get("edge_tolerance_px", 2.5)))
                 results.append({"id": entry.get("id", f"micro_{index}"), "kind": entry.get("kind"), **metrics})
                 if metrics["source_coverage"] < max(float(entry.get("min_source_coverage", 0.72)), 0.60):
                     violations.append({"field": field, "reason": f"micro annotation render covers only {metrics['source_coverage']:.3f} of source edges"})
@@ -296,7 +226,7 @@ def micro_annotation_violations(manifest, source_image, preview_image, coverage_
     for hotspot in hotspots:
         box = hotspot["box_px"]
         _x, _y, width, height = box
-        if profile and (width > profile["micro_width_px"] or height > profile["micro_height_px"]):
+        if width > 45 or height > 30 or hotspot["edge_pixels"] > 110:
             continue
         if not any(_box_center_inside(box, region) for region in plot_regions):
             continue
@@ -331,51 +261,24 @@ def _median_lab(crop):
     return _lab_color(median)
 
 
-def _palette_stats(crop):
-    """Describe chroma and palette complexity without fixed hue buckets."""
-    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32)
-    lightness = lab[:, :, 0] * 100.0 / 255.0
-    ab = lab[:, :, 1:3] - 128.0
-    chroma = np.linalg.norm(ab, axis=2)
-    # Background is inferred from the border, so white, tinted, and dark cards
-    # all work without a global RGB cutoff.
-    border = np.concatenate((lab[0], lab[-1], lab[:, 0], lab[:, -1]), axis=0)
-    background = np.median(border, axis=0)
-    foreground = np.linalg.norm(lab - background, axis=2) > max(5.0, float(np.median(np.abs(border - background))) * 3.0)
+def _chroma_stats(crop):
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    foreground = (value < 245) | (saturation > 25)
     foreground_count = int(np.count_nonzero(foreground))
-    foreground_chroma = chroma[foreground]
-    if foreground_count == 0:
-        return {"foreground_pixels": 0, "chromatic_pixels": 0, "chroma_ratio": 0.0, "median_chroma": 0.0, "palette_groups": 0}
-    chroma_floor = max(10.0, float(np.percentile(foreground_chroma, 35)) * 0.65)
-    chromatic = foreground & (chroma >= chroma_floor) & (lightness >= 8.0)
-    samples = ab[chromatic]
-    chroma_count = int(samples.shape[0])
-    groups = 0
+    chromatic = foreground & (saturation >= 50) & (value >= 35)
+    chroma_count = int(np.count_nonzero(chromatic))
+    ratio = 0.0 if foreground_count == 0 else chroma_count / foreground_count
+    diversity = 0
     if chroma_count:
-        stride = max(1, chroma_count // 1500)
-        data = samples[::stride].astype(np.float32)
-        maximum_groups = min(5, max(1, int(round(math.sqrt(len(data) / 80.0)))))
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.5)
-        _compactness, labels, centers = cv2.kmeans(data, maximum_groups, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
-        counts = np.bincount(labels.ravel(), minlength=maximum_groups)
-        minimum_share = max(0.04, 8.0 / len(data))
-        significant = [i for i, count in enumerate(counts) if count / len(data) >= minimum_share]
-        # Merge clusters that differ only through compression/antialiasing.
-        merged = []
-        for i in sorted(significant, key=lambda item: counts[item], reverse=True):
-            if all(np.linalg.norm(centers[i] - centers[j]) >= 10.0 for j in merged):
-                merged.append(i)
-        groups = len(merged)
-    return {
-        "foreground_pixels": foreground_count,
-        "chromatic_pixels": chroma_count,
-        "chroma_ratio": float(chroma_count / foreground_count),
-        "median_chroma": float(np.median(foreground_chroma)),
-        "palette_groups": groups,
-    }
+        histogram, _ = np.histogram(hsv[:, :, 0][chromatic], bins=8, range=(0, 180))
+        histogram = histogram / max(1, histogram.sum())
+        diversity = int(np.count_nonzero(histogram >= 0.07))
+    return {"foreground_pixels": foreground_count, "chromatic_pixels": chroma_count, "chroma_ratio": float(ratio), "hue_diversity": diversity}
 
 
-def _source_curve_mask(source_image, roi, target_color, color_distance=None):
+def _source_curve_mask(source_image, roi, target_color, color_distance):
     crop = _crop(source_image, roi)
     if crop is None:
         return None, None
@@ -385,15 +288,8 @@ def _source_curve_mask(source_image, roi, target_color, color_distance=None):
     lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32)
     target_lab = cv2.cvtColor(target.reshape(1, 1, 3), cv2.COLOR_BGR2LAB)[0, 0].astype(np.float32)
     distance = np.linalg.norm(lab - target_lab, axis=2)
-    nearest = np.percentile(distance, 2)
-    near_values = distance[distance <= np.percentile(distance, 12)]
-    dispersion = float(np.median(np.abs(near_values - np.median(near_values)))) if near_values.size else 0.0
-    adaptive_distance = float(np.clip(nearest + 4.0 * max(2.0, dispersion), 10.0, 48.0))
-    if color_distance is not None:
-        adaptive_distance = min(adaptive_distance, max(8.0, float(color_distance)))
-    mask = (distance <= adaptive_distance).astype(np.uint8) * 255
-    kernel_size = max(1, int(round(min(crop.shape[:2]) * 0.004)))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((kernel_size, kernel_size), np.uint8))
+    mask = (distance <= min(float(color_distance), 55.0)).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     return crop, mask
 
 
@@ -414,90 +310,38 @@ def curve_source_coverage_violations(manifest, source_image):
             continue
         point_array = np.asarray(points, dtype=np.float32)
         x, y, width, height = [float(value) for value in roi]
+        primary_span = (float(np.ptp(point_array[:, 0])) / width) if width >= height else (float(np.ptp(point_array[:, 1])) / height)
+        minimum_span = float(trace.get("min_primary_span_ratio", 0.55))
+        if minimum_span < 0.35:
+            minimum_span = 0.35
         _crop_image, source_mask = _source_curve_mask(source_image, roi, trace.get("target_color") or shape.get("stroke"), trace.get("color_distance", 48.0))
         source_support = None
         source_stroke_coverage = None
-        trace_span_px = float(np.ptp(point_array[:, 0])) if width >= height else float(np.ptp(point_array[:, 1]))
-        source_span_px = None
-        span_ratio = None
         if source_mask is not None and np.count_nonzero(source_mask):
-            mask_y, mask_x = np.nonzero(source_mask)
-            source_axis = mask_x if width >= height else mask_y
-            source_span_px = float(np.percentile(source_axis, 98) - np.percentile(source_axis, 2))
-            span_ratio = trace_span_px / max(source_span_px, 1.0)
             local_points = np.rint(point_array - np.array([[x, y]], dtype=np.float32)).astype(np.int32)
             local_points[:, 0] = np.clip(local_points[:, 0], 0, source_mask.shape[1] - 1)
             local_points[:, 1] = np.clip(local_points[:, 1], 0, source_mask.shape[0] - 1)
             distance_to_source = cv2.distanceTransform((source_mask == 0).astype(np.uint8), cv2.DIST_L2, 3)
-            distance_tolerance = max(1.0, min(source_mask.shape[:2]) * 0.025)
-            source_support = float(np.mean(distance_to_source[local_points[:, 1], local_points[:, 0]] <= distance_tolerance))
+            source_support = float(np.mean(distance_to_source[local_points[:, 1], local_points[:, 0]] <= 2.5))
             trace_mask = np.zeros(source_mask.shape, dtype=np.uint8)
-            stroke_width = max(2, int(round(distance_tolerance * 2.0)))
-            cv2.polylines(trace_mask, [local_points.reshape(-1, 1, 2)], False, 255, stroke_width, cv2.LINE_AA)
+            cv2.polylines(trace_mask, [local_points.reshape(-1, 1, 2)], False, 255, 5, cv2.LINE_AA)
             source_stroke_coverage = float(np.count_nonzero((source_mask > 0) & (trace_mask > 0)) / max(1, np.count_nonzero(source_mask)))
         result = {
             "id": shape.get("id", f"curve_{index}"),
-            "trace_primary_span_px": trace_span_px,
-            "source_primary_span_px": source_span_px,
-            "trace_to_source_span_ratio": span_ratio,
+            "primary_span_ratio": primary_span,
             "source_point_support": source_support,
             "source_stroke_coverage": source_stroke_coverage,
         }
         results.append(result)
-        span_failed = span_ratio is None or span_ratio < 0.72
-        support_failed = source_support is None or source_support < 0.60
-        coverage_failed = source_stroke_coverage is None or source_stroke_coverage < 0.28
-        if span_failed and (support_failed or coverage_failed):
-            violations.append({"field": field, "reason": f"trace-to-source evidence indicates an incomplete curve (span={span_ratio}, point_support={source_support}, stroke_coverage={source_stroke_coverage})"})
-        elif support_failed and coverage_failed:
-            violations.append({"field": field, "reason": f"trace geometry is unsupported by the source stroke (point_support={source_support}, stroke_coverage={source_stroke_coverage})"})
+        if primary_span < minimum_span:
+            violations.append({"field": field, "reason": f"trace spans only {primary_span:.3f} of its primary source ROI; minimum is {minimum_span:.3f}"})
+        minimum_support = max(float(trace.get("min_source_point_support", 0.82)), 0.65)
+        minimum_stroke_coverage = max(float(trace.get("min_source_stroke_coverage", 0.22)), 0.12)
+        if source_support is None or source_support < minimum_support:
+            violations.append({"field": field, "reason": f"trace points are insufficiently supported by source-color pixels ({source_support})"})
+        if source_stroke_coverage is None or source_stroke_coverage < minimum_stroke_coverage:
+            violations.append({"field": field, "reason": f"trace explains too little of the source-colored stroke ({source_stroke_coverage})"})
     return violations, results
-
-
-def _state_cell_indices(shapes, source_image):
-    """Find repeated small rectangular indicators from geometry, not names."""
-    if source_image is None:
-        return set()
-    page_height, page_width = source_image.shape[:2]
-    candidates = []
-    for index, shape in enumerate(shapes):
-        if shape.get("type") not in {"rect", "roundRect"} or not _valid_box(shape.get("box_px")):
-            continue
-        x, y, width, height = [float(value) for value in shape["box_px"]]
-        if width <= page_width * 0.12 and height <= page_height * 0.20:
-            candidates.append((index, x, y, width, height))
-    selected = {
-        index for index, shape in enumerate(shapes)
-        if str(shape.get("semantic_role") or "").lower() in {"state-cell", "status-cell", "indicator-cell"}
-    }
-    for anchor_pos, anchor in enumerate(candidates):
-        ai, ax, ay, aw, ah = anchor
-        group = [anchor]
-        for candidate in candidates[anchor_pos + 1:]:
-            ci, cx, cy, cw, ch = candidate
-            size_similar = abs(cw - aw) <= max(2.0, 0.22 * aw) and abs(ch - ah) <= max(2.0, 0.22 * ah)
-            row_aligned = abs((cy + ch / 2) - (ay + ah / 2)) <= max(2.0, 0.35 * ah)
-            column_aligned = abs((cx + cw / 2) - (ax + aw / 2)) <= max(2.0, 0.35 * aw)
-            if size_similar and (row_aligned or column_aligned):
-                group.append(candidate)
-        if len(group) >= 3:
-            centers = sorted((item[1] + item[3] / 2 for item in group))
-            gaps = np.diff(centers)
-            regular = len(gaps) < 2 or float(np.median(np.abs(gaps - np.median(gaps)))) <= max(2.0, 0.35 * float(np.median(gaps)))
-            if regular:
-                selected.update(item[0] for item in group)
-    return selected
-
-
-def _source_fill_stats(crop):
-    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32)
-    lab[:, :, 0] *= 100.0 / 255.0
-    lab[:, :, 1:] -= 128.0
-    pixels = lab.reshape(-1, 3)
-    center = np.median(pixels, axis=0)
-    distances = np.linalg.norm(pixels - center, axis=1)
-    dispersion = float(np.median(np.abs(distances - np.median(distances))))
-    return center, dispersion
 
 
 def color_semantic_violations(manifest, source_image, preview_image):
@@ -515,36 +359,37 @@ def color_semantic_violations(manifest, source_image, preview_image):
         if source_crop is None or preview_crop is None:
             continue
         preview_crop = cv2.resize(preview_crop, (source_crop.shape[1], source_crop.shape[0]), interpolation=cv2.INTER_AREA)
-        source_stats = _palette_stats(source_crop)
-        preview_stats = _palette_stats(preview_crop)
+        source_stats = _chroma_stats(source_crop)
+        preview_stats = _chroma_stats(preview_crop)
         result = {"id": image.get("id", f"image_{index}"), "kind": "image-palette", "source": source_stats, "preview": preview_stats}
         results.append(result)
-        minimum_evidence = max(8, int(round(source_crop.shape[0] * source_crop.shape[1] * 0.002)))
-        if source_stats["chromatic_pixels"] >= minimum_evidence and source_stats["chroma_ratio"] >= 0.08:
+        if source_stats["chromatic_pixels"] >= 20 and source_stats["chroma_ratio"] >= 0.10:
             retained = preview_stats["chroma_ratio"] / max(source_stats["chroma_ratio"], 1e-6)
-            chroma_strength_retained = preview_stats["median_chroma"] / max(source_stats["median_chroma"], 1e-6)
-            if retained < 0.38 and chroma_strength_retained < 0.55:
+            if retained < 0.42:
                 violations.append({"field": f"images[{index}]", "reason": f"source chroma collapsed to {retained:.3f} of its original proportion; mild color shifts are allowed but color-to-grayscale drift is not"})
-            if source_stats["palette_groups"] >= 3 and preview_stats["palette_groups"] <= max(1, source_stats["palette_groups"] - 2):
-                violations.append({"field": f"images[{index}]", "reason": f"source palette diversity collapsed from {source_stats['palette_groups']} adaptive color groups to {preview_stats['palette_groups']}"})
+            if source_stats["hue_diversity"] >= 3 and preview_stats["hue_diversity"] <= source_stats["hue_diversity"] - 2:
+                violations.append({"field": f"images[{index}]", "reason": f"source palette diversity collapsed from {source_stats['hue_diversity']} hue groups to {preview_stats['hue_diversity']}"})
 
-    shapes = manifest.get("shapes", [])
-    state_indices = _state_cell_indices(shapes, source_image)
-    for index, shape in enumerate(shapes):
-        if index not in state_indices:
+    for index, shape in enumerate(manifest.get("shapes", [])):
+        if shape.get("type") not in {"rect", "roundRect"} or not _valid_box(shape.get("box_px")):
+            continue
+        width, height = float(shape["box_px"][2]), float(shape["box_px"][3])
+        role_text = f"{shape.get('id', '')} {shape.get('semantic_role', '')}".lower()
+        state_like = width <= 42 and height <= 42 or any(term in role_text for term in ("risk", "state", "status", "cell", "slot", "bar"))
+        if not state_like:
             continue
         expected_bgr = _hex_to_bgr(shape.get("fill"))
         source_crop = _crop(source_image, shape["box_px"], inset=0.22)
         if expected_bgr is None or source_crop is None or source_crop.size < 9:
             continue
-        source_lab, dispersion = _source_fill_stats(source_crop)
+        source_lab = _median_lab(source_crop)
         fill_lab = _lab_color(expected_bgr)
         delta_e = float(np.linalg.norm(source_lab - fill_lab))
-        tolerance = float(np.clip(14.0 + 2.8 * dispersion, 18.0, 44.0))
-        result = {"id": shape.get("id", f"shape_{index}"), "kind": "state-fill", "delta_e": delta_e, "source_dispersion": dispersion, "adaptive_tolerance": tolerance}
+        result = {"id": shape.get("id", f"shape_{index}"), "kind": "state-fill", "delta_e": delta_e}
         results.append(result)
+        tolerance = min(float(shape.get("source_color_tolerance_delta_e", 34.0)), 45.0)
         if delta_e > tolerance:
-            violations.append({"field": f"shapes[{index}].fill", "reason": f"repeated state-cell fill differs from its source by DeltaE {delta_e:.1f}; adaptive tolerance is {tolerance:.1f}"})
+            violations.append({"field": f"shapes[{index}].fill", "reason": f"small state-cell fill differs from its source by DeltaE {delta_e:.1f}; tolerance is {tolerance:.1f}"})
     return violations, results
 
 

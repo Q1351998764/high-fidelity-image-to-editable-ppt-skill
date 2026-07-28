@@ -54,25 +54,6 @@ class AdvancedReconstructionTests(unittest.TestCase):
         self.assertLess(metrics["source_edge_coverage"], 0.5)
         self.assertTrue(any("source edges" in item["reason"] or "hotspots" in item["reason"] for item in violations))
 
-    def test_reverse_coverage_decision_is_scale_consistent(self):
-        np = __import__("numpy")
-        cv2 = __import__("cv2")
-        decisions = []
-        for scale in (1, 4):
-            source = np.full((120 * scale, 240 * scale, 3), 255, dtype="uint8")
-            preview = source.copy()
-            cv2.line(source, (20 * scale, 90 * scale), (210 * scale, 90 * scale), (0, 0, 0), 2 * scale)
-            cv2.line(source, (20 * scale, 90 * scale), (20 * scale, 25 * scale), (0, 0, 0), 2 * scale)
-            manifest = {
-                "slide": {"width": 2.4, "height": 1.2},
-                "content_box": {"left": 0, "top": 0, "width": 2.4, "height": 1.2},
-                "source": {"width_px": 240 * scale, "height_px": 120 * scale},
-                "source_coverage_policy": {"max_unexplained_hotspots": 0, "min_source_edge_coverage": 0.95},
-            }
-            violations, metrics = reverse_source_coverage_violations(manifest, source, preview)
-            decisions.append((bool(violations), metrics["hard_failure"]))
-        self.assertEqual(decisions[0], decisions[1])
-
     def test_plots_require_micro_annotation_inventory(self):
         image = __import__("numpy").full((100, 200, 3), 255, dtype="uint8")
         manifest = {"shapes": [{"id": "curve", "plot_area_px": [10, 10, 150, 60]}]}
@@ -90,22 +71,8 @@ class AdvancedReconstructionTests(unittest.TestCase):
             "curve_trace": {"target_color": "#1239A6", "color_distance": 30, "trace_points_px": [[10, 70], [30, 68], [50, 66]]},
         }]}
         violations, results = curve_source_coverage_violations(manifest, source)
-        self.assertLess(results[0]["trace_to_source_span_ratio"], 0.55)
-        self.assertTrue(any("incomplete curve" in item["reason"] for item in violations))
-
-    def test_complete_short_local_curve_is_not_penalized_for_small_roi_span(self):
-        cv2 = __import__("cv2")
-        np = __import__("numpy")
-        source = np.full((100, 220, 3), 255, dtype="uint8")
-        points = np.array([[80, 65], [90, 54], [101, 58], [112, 42]], dtype="int32")
-        cv2.polylines(source, [points], False, (166, 57, 18), 2)
-        manifest = {"shapes": [{
-            "id": "local", "type": "curve", "stroke": "#1239A6", "plot_area_px": [10, 20, 200, 60],
-            "curve_trace": {"target_color": "#1239A6", "trace_points_px": points.tolist()},
-        }]}
-        violations, results = curve_source_coverage_violations(manifest, source)
-        self.assertGreater(results[0]["trace_to_source_span_ratio"], 0.85)
-        self.assertEqual(violations, [])
+        self.assertLess(results[0]["primary_span_ratio"], 0.55)
+        self.assertTrue(any("trace spans only" in item["reason"] for item in violations))
 
     def test_color_gate_allows_mild_shift_but_rejects_grayscale_collapse_and_wrong_cell(self):
         np = __import__("numpy")
@@ -117,37 +84,22 @@ class AdvancedReconstructionTests(unittest.TestCase):
             source[15:55, 15 + idx * 35:45 + idx * 35] = color
         for idx, color in enumerate(colors_mild):
             preview_mild[15:55, 15 + idx * 35:45 + idx * 35] = color
-        cells = [[150 + idx * 22, 70, 18, 18] for idx in range(4)]
-        for x, y, width, height in cells:
-            source[y:y + height, x:x + width] = (30, 30, 225)
-            preview_mild[y:y + height, x:x + width] = (35, 35, 220)
+        source[70:90, 180:200] = (30, 30, 225)
+        preview_mild[70:90, 180:200] = (35, 35, 220)
         manifest = {
             "slide": {"width": 2.4, "height": 1.0}, "content_box": {"left": 0, "top": 0, "width": 2.4, "height": 1.0},
             "source": {"width_px": 240, "height_px": 100},
             "images": [{"id": "palette", "box_px": [10, 10, 115, 50]}],
-            "shapes": [{"id": f"indicator_{idx}", "type": "rect", "box_px": box, "fill": "#DD2222"} for idx, box in enumerate(cells)],
+            "shapes": [{"id": "risk_cell", "type": "rect", "box_px": [180, 70, 20, 20], "fill": "#DD2222"}],
         }
         mild_violations, _ = color_semantic_violations(manifest, source, preview_mild)
         self.assertEqual(mild_violations, [])
         preview_gray = preview_mild.copy()
         preview_gray[10:60, 10:130] = (80, 80, 80)
-        manifest["shapes"][3]["fill"] = "#F1F1F1"
+        manifest["shapes"][0]["fill"] = "#F1F1F1"
         violations, _ = color_semantic_violations(manifest, source, preview_gray)
         self.assertTrue(any("chroma collapsed" in item["reason"] or "palette diversity" in item["reason"] for item in violations))
         self.assertTrue(any("DeltaE" in item["reason"] for item in violations))
-
-    def test_small_named_rectangle_is_not_a_state_cell_without_geometry_evidence(self):
-        np = __import__("numpy")
-        source = np.full((100, 240, 3), 255, dtype="uint8")
-        preview = source.copy()
-        manifest = {
-            "slide": {"width": 2.4, "height": 1.0}, "content_box": {"left": 0, "top": 0, "width": 2.4, "height": 1.0},
-            "source": {"width_px": 240, "height_px": 100},
-            "shapes": [{"id": "risk_status_bar", "type": "rect", "box_px": [20, 20, 18, 18], "fill": "#000000"}],
-        }
-        violations, results = color_semantic_violations(manifest, source, preview)
-        self.assertEqual(violations, [])
-        self.assertFalse(any(item["kind"] == "state-fill" for item in results))
 
     def test_ocr_gate_blocks_builtin_fallback_and_explicit_override_allows_next(self):
         with tempfile.TemporaryDirectory() as directory:

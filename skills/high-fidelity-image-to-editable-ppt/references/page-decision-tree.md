@@ -37,7 +37,7 @@ Build a complete inventory before deciding anything, so that no object's source 
 - PPT native element candidates: text, text boxes, cards, panels, tables, axes, lines, flow boxes, dividers, simple arrows.
 - Geometry inventory: every axis and its two endpoint markers, every bracket/brace/parenthesis and its family/orientation, every legend curve and its baseline relationship, and every other small structural curve. Record tight source-pixel ROIs; do not merge several unrelated components into one check.
 - Micro-annotation inventory: at source-pixel zoom, record every plot-side `t`, `%`, unit/tick label, and tiny arrowhead as its own expected object. Treat `t` plus a right arrow as a time-axis label and a real line-end marker, never as a decorative text glyph.
-- Color-state inventory: for multicolor icons record the expected broad palette groups; for repeated state cells record the ordered filled/empty sequence or count. Runtime palette groups, cell arrays, and tolerances are inferred from page geometry and local source statistics. Exact RGB matching is unnecessary, but color-to-grayscale collapse and changed state counts are failures.
+- Color-state inventory: for multicolor icons record the expected broad palette groups; for repeated state cells record the ordered filled/empty sequence or count. Exact RGB matching is unnecessary, but color-to-grayscale collapse and changed state counts are failures.
 - Formula candidates: objective functions, constraints, matrices, fractions, roots, cases, multiline equation groups, ordinary math expressions. List formulas separately; never group them with ordinary text.
 - Corner geometry for every rectangle/card/table outline: straight, slight radius, obvious radius, pill.
 
@@ -267,7 +267,7 @@ Structure and artifacts:
 - Smooth source curves remain editable cubic paths rather than visible polylines.
 - Every non-fill curve follows a pixel trace of the source and passes its Chamfer-error limit; data curves additionally stay clear of protected axes.
 - Whole-page reverse coverage has no unexplained structural hotspot, and every plot-side micro annotation is represented in `micro_annotation_inventory`.
-- Multicolor assets retain broad chroma/palette semantics under adaptive Lab clustering, while geometrically repeated state cells preserve their source filled/empty sequence within locally derived Lab color limits.
+- Multicolor assets retain broad chroma/palette semantics, while repeated state cells preserve their source filled/empty sequence within tolerant Lab color limits.
 - Every legend curve preserves its source proportions and satisfies its declared baseline relationship.
 - Every axis preserves its source start/end markers; a source arrowhead must remain a real editable DrawingML line end.
 - Every bracket has the correct family and orientation; curly, round, square, and measurement brackets are not interchangeable.
